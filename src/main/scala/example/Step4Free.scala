@@ -22,23 +22,30 @@ object Step4Free extends App {
 
     def runStream(program: Free[Step, StackConfig])(signal: ShutdownSignal): Stream[Throwable, Event] = {
 
-      val pureStep: StackConfig => Stream[Throwable, Event] = { case stackConfig =>
-        ZStream(StackStarted(stackConfig)) ++ ZStream.fromEffect(signal.await).as(StackStopping)
+      def go(program: Free[Step, StackConfig]): Stream[Throwable, Event] = {
+        val pureStep: StackConfig => Stream[Throwable, Event] = { case stackConfig =>
+          ZStream(StackStarted(stackConfig)) ++ ZStream.fromEffect(signal.await).as(StackStopping)
+        }
+
+        val suspendStep: Step[Free[Step, StackConfig]] => Stream[Throwable, Event] = {
+          case Step(process, startingEvent, startedvent, stoppingEvent, stoppedEvent) =>
+            ZStream(startingEvent) ++ ZStream.unwrapManaged(process.map { case (handler, nextStep) =>
+              ZStream(startedvent) ++
+                go(nextStep) ++
+                ZStream(stoppingEvent) ++
+                ZStream
+                  .fromEffect(handler.stopProcess)
+                  .as(stoppedEvent)
+            })
+        }
+
+        Free.fold(program)(
+          pure = pureStep,
+          suspend = suspendStep
+        )
       }
 
-      val suspendStep: Step[Free[Step, StackConfig]] => Stream[Throwable, Event] = {
-        case Step(process, startingEvent, startedvent, stoppingEvent, stoppedEvent) =>
-          ZStream(startingEvent) ++ ZStream.managed(process).flatMap { case (handler, nextStep) =>
-            ZStream(startedvent) ++ runStream(nextStep)(signal) ++ ZStream(stoppingEvent) ++ ZStream
-              .fromEffect(handler.stopProcess)
-              .as(stoppedEvent)
-          }
-      }
-
-      ZStream(StackStarting) ++ Free.fold(program)(
-        pure = pureStep,
-        suspend = suspendStep
-      ) ++ ZStream(StackStopped)
+      ZStream(StackStarting) ++ go(program) ++ ZStream(StackStopped)
     }
   }
 
@@ -97,16 +104,13 @@ object Step4Free extends App {
 
   def runZookeeper: Free[Step, ZookeeperConfig] = Free.liftF(
     Step(
-      process = runZookeeperManaged,
+      process = Managed.make(startZookeeper)(_._1.stopProcess),
       startingEvent = ZookeeperStarting,
       startedEvent = ZookeeperStarted,
       stoppingEvent = ZookeeperStopping,
       stoppedEvent = ZookeeperStopped
     )
   )
-
-  def runZookeeperManaged: Managed[Throwable, (ProcessHandler, ZookeeperConfig)] =
-    Managed.make(startZookeeper)(_._1.stopProcess)
 
   def startZookeeper: IO[Throwable, (ProcessHandler, ZookeeperConfig)] =
     IO(println("Start Zookeeper.")).as(
@@ -118,16 +122,13 @@ object Step4Free extends App {
 
   def runKafka(zookeeperConfig: ZookeeperConfig): Free[Step, KafkaConfig] = Free.liftF(
     Step(
-      process = runKafkaManaged(zookeeperConfig),
+      process = Managed.make(startKafka(zookeeperConfig))(_._1.stopProcess),
       startingEvent = KafkaStarting,
       startedEvent = KafkaStarted,
       stoppingEvent = KafkaStopping,
       stoppedEvent = KafkaStopped
     )
   )
-
-  def runKafkaManaged(zookeeperConfig: ZookeeperConfig): Managed[Throwable, (ProcessHandler, KafkaConfig)] =
-    Managed.make(startKafka(zookeeperConfig))(_._1.stopProcess)
 
   def startKafka(zookeeperConfig: ZookeeperConfig): IO[Throwable, (ProcessHandler, KafkaConfig)] =
     IO(println("Start Kafka.")).as(
@@ -139,16 +140,13 @@ object Step4Free extends App {
 
   def runSchemaRegistry(kafkaConfig: KafkaConfig): Free[Step, SchemaRegistryConfig] = Free.liftF(
     Step(
-      process = runSchemaRegistryManaged(kafkaConfig),
+      process = Managed.make(startSchemaRegistry(kafkaConfig))(_._1.stopProcess),
       startingEvent = SchemaRegistryStarting,
       startedEvent = SchemaRegistryStarted,
       stoppingEvent = SchemaRegistryStopping,
       stoppedEvent = SchemaRegistryStopped
     )
   )
-
-  def runSchemaRegistryManaged(kafkaConfig: KafkaConfig): Managed[Throwable, (ProcessHandler, SchemaRegistryConfig)] =
-    Managed.make(startSchemaRegistry(kafkaConfig))(_._1.stopProcess)
 
   def startSchemaRegistry(kafkaConfig: KafkaConfig): IO[Throwable, (ProcessHandler, SchemaRegistryConfig)] =
     IO(println("Start Schema registry.")).as(
