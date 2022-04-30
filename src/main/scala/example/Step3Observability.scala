@@ -50,7 +50,6 @@ object Step3Observability extends App {
         zookeeperConfig,
         { kafkaConfig =>
           runSchemaRegistryStream(
-            zookeeperConfig,
             kafkaConfig,
             { registryConfig =>
               ZStream(
@@ -88,7 +87,6 @@ object Step3Observability extends App {
     })
 
   def runSchemaRegistryStream(
-      zookeeperConfig: ZookeeperConfig,
       kafkaConfig: KafkaConfig,
       next: SchemaRegistryConfig => Stream[Throwable, Event]
   ): Stream[Throwable, Event] =
